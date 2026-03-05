@@ -1,0 +1,100 @@
+# =============================================================================
+# DestinationRule — Disable Istio mTLS to Kubernetes API server
+# =============================================================================
+# PURPOSE:
+#   Prevents Istio from attempting to apply mTLS when mesh workloads
+#   communicate with the Kubernetes API server. Without this rule,
+#   Istio tries to wrap API server traffic in mTLS, which breaks
+#   because the API server manages its own TLS independently.
+#
+# WHY THIS IS NEEDED:
+#   When STRICT PeerAuthentication is applied mesh-wide, Istio expects
+#   ALL traffic to use mTLS. The Kubernetes API server
+#   (kubernetes.default.svc.cluster.local) already uses TLS but with
+#   its own certificates — not Istio SPIFFE certificates.
+#
+#   Without this rule:
+#     mesh pod → Istio wraps in mTLS → API server
+#     API server receives: mTLS on top of its own TLS
+#     Result: TLS handshake failure — double-wrapped TLS
+#
+#   With this rule:
+#     mesh pod → Istio passes through → API server
+#     API server receives: its own TLS (as expected)
+#     Result: normal API server communication
+#
+# SCOPE:
+#   host: kubernetes.default.svc.cluster.local
+#   This targets only the Kubernetes API server Service.
+#   All other mesh traffic is unaffected.
+#
+#   namespace: istio-system
+#   DestinationRules in istio-system apply mesh-wide.
+#   A DestinationRule in any other namespace applies only to
+#   traffic originating FROM that namespace.
+#   Placing this in istio-system ensures all namespaces benefit.
+#
+# TRAFFICPOLICY TLS MODES:
+#
+#   DISABLE  <- this file
+#     Istio does not modify TLS for this destination.
+#     Use for: services with their own TLS (API server, external HTTPS)
+#
+#   ISTIO_MUTUAL (default in STRICT mesh)
+#     Istio applies mTLS using SPIFFE certificates.
+#     Use for: mesh-internal service to service traffic
+#
+#   SIMPLE
+#     Istio initiates standard TLS (not mTLS) to the destination.
+#     Use for: external HTTPS services without client cert requirement
+#
+#   MUTUAL
+#     Istio initiates mTLS using custom certificates (not SPIFFE).
+#     Use for: external services requiring mutual TLS with custom certs
+#
+# COMMON MISTAKE — forgetting this rule:
+#   Symptom: pods in ambient mesh cannot reach Kubernetes API server
+#   Error: "certificate verify failed" or "connection reset" to
+#          kubernetes.default.svc.cluster.local:443
+#   Fix: apply this DestinationRule
+#
+#   This is especially important for:
+#     - Operators and controllers that call the Kubernetes API
+#     - ServiceAccount token validation
+#     - RBAC checks from within pods
+#     - Helm releases that interact with the API server
+#
+# VERIFY AFTER APPLYING:
+#   oc get destinationrule api-server -n istio-system
+#
+#   # Confirm API server is reachable from a mesh pod
+#   oc exec -n bookinfo deploy/productpage-v1 -- \
+#     python3 -c "
+#   import urllib.request, ssl
+#   ctx = ssl.create_default_context()
+#   ctx.check_hostname = False
+#   ctx.verify_mode = ssl.CERT_NONE
+#   r = urllib.request.urlopen('https://kubernetes.default.svc.cluster.local/healthz', context=ctx)
+#   print(r.read().decode())
+#   "
+#   # Expect: ok
+# =============================================================================
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: api-server
+  # istio-system scope = mesh-wide.
+  # All namespaces inherit this rule for the API server destination.
+  namespace: istio-system
+spec:
+  # Targets the Kubernetes API server Service specifically.
+  # This is the well-known internal DNS name for the API server
+  # in every Kubernetes cluster.
+  host: kubernetes.default.svc.cluster.local
+
+  trafficPolicy:
+    tls:
+      # DISABLE — Istio does not modify TLS to the API server.
+      # The API server handles its own TLS independently.
+      # Prevents double-TLS wrapping that breaks API communication.
+      mode: DISABLE

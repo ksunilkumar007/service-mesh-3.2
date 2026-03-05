@@ -1,0 +1,120 @@
+# =============================================================================
+# Waypoint Proxy — L7 policy enforcement for bookinfo namespace
+# =============================================================================
+# PURPOSE:
+#   Deploys a Waypoint proxy for the bookinfo namespace. The Waypoint is an
+#   Envoy-based proxy that handles L7 (HTTP/gRPC) traffic within the mesh.
+#
+# ZTUNNEL vs WAYPOINT — understanding the split:
+#
+#   ztunnel (always active for enrolled namespaces):
+#     - Handles L4 — TCP connections, mTLS encryption, HBONE tunnelling
+#     - Enforces L4 AuthorizationPolicy (source IP, port, SPIFFE principal)
+#     - Runs as DaemonSet — one pod per node
+#     - Cannot see HTTP headers, methods, paths, JWT tokens
+#
+#   Waypoint (optional — deploy only when you need L7):
+#     - Handles L7 — HTTP headers, methods, paths, JWT validation
+#     - Enforces L7 AuthorizationPolicy (method, path, headers)
+#     - Handles HTTPRoute traffic splitting (e.g. 90/10 across versions)
+#     - Handles gRPC routing
+#     - Runs as Deployment — one or more pods, scalable
+#     - Receives traffic FROM ztunnel via HBONE, not directly from pods
+#
+#   Traffic flow WITH Waypoint:
+#     pod → ztunnel (L4 mTLS) → Waypoint (L7 policy) → ztunnel → destination pod
+#
+#   Traffic flow WITHOUT Waypoint:
+#     pod → ztunnel (L4 mTLS) → destination pod
+#     (L7 AuthorizationPolicies and HTTPRoutes are silently ignored)
+#
+# IMPORTANT — TWO STEPS TO ACTIVATE A WAYPOINT:
+#
+#   Step 1: Apply this Gateway CR (creates the Waypoint pod)
+#     oc apply -f waypoint.yaml
+#
+#   Step 2: Annotate the namespace to USE the Waypoint
+#     oc annotate namespace bookinfo istio.io/use-waypoint=waypoint
+#
+#   Without Step 2, the Waypoint pod runs but ztunnel bypasses it entirely.
+#   Traffic flows direct HBONE pod-to-pod. L7 policy is NOT enforced.
+#   This is a common mistake — always check the namespace annotation.
+#
+# VERIFY WAYPOINT IS BEING USED:
+#   istioctl ztunnel-config workload -n bookinfo
+#   WAYPOINT column should show "waypoint" not "None"
+#
+# GATEWAY API vs ISTIO GATEWAY:
+#   This uses Kubernetes Gateway API (gateway.networking.k8s.io/v1)
+#   NOT the Istio Gateway CRD (networking.istio.io/v1).
+#   Waypoints in ambient mode REQUIRE Gateway API — they cannot be
+#   configured with the older Istio Gateway resource.
+#
+# SCOPE — istio.io/waypoint-for label:
+#
+#   service  → Waypoint intercepts traffic destined for Services
+#              (Kubernetes Service ClusterIP). This is the most common
+#              setting. HTTPRoutes and service-scoped AuthorizationPolicies
+#              are evaluated here.
+#
+#   workload → Waypoint intercepts traffic destined for pod IPs directly
+#              (bypassing the Service). Less common — used for workload-
+#              specific policies that need to apply regardless of which
+#              Service the traffic came through.
+#
+#   all      → Both service and workload traffic goes through the Waypoint.
+#              Higher overhead — only use when you need both.
+#
+#   none     → Waypoint exists but intercepts nothing. Used to temporarily
+#              disable without deleting the Gateway CR.
+#
+#   Your choice: service — all bookinfo HTTPRoutes are service-targeted.
+#
+# LISTENER PORT 15008 / PROTOCOL HBONE:
+#   ztunnel connects to the Waypoint on port 15008 using HBONE.
+#   This is the same port ztunnel uses for pod-to-pod HBONE tunnels.
+#   The Waypoint unwraps the HBONE tunnel, applies L7 policy, then
+#   re-wraps in a new HBONE tunnel to the destination ztunnel.
+#   Do not change this port — it is an Istio ambient mode constant.
+#
+# NAMESPACE ANNOTATION:
+#   After applying this file, annotate the namespace:
+#     oc annotate namespace bookinfo istio.io/use-waypoint=waypoint
+#   The value "waypoint" must match metadata.name of this Gateway CR.
+#
+# VERIFY AFTER APPLYING:
+#   # Waypoint Gateway CR accepted
+#   oc get gateway waypoint -n bookinfo
+#
+#   # Waypoint pod running
+#   oc get pods -n bookinfo -l gateway.istio.io/managed=istio.io-mesh-controller
+#
+#   # ztunnel workload registry shows WAYPOINT=waypoint (not None)
+#   istioctl ztunnel-config workload -n bookinfo
+#
+#   # L7 policy now enforced — test with AuthorizationPolicy
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  labels:
+    # Scope: intercept traffic destined for Services in this namespace.
+    # Change to "workload" for pod-IP-targeted traffic.
+    # Change to "all" for both.
+    istio.io/waypoint-for: service
+  name: waypoint
+  namespace: bookinfo
+spec:
+  # istio-waypoint — tells Istio this is a mesh Waypoint proxy.
+  # Do NOT use "istio" here — that creates an ingress/egress gateway,
+  # not a Waypoint. The two classes deploy completely different
+  # Envoy configurations.
+  gatewayClassName: istio-waypoint
+
+  listeners:
+  - name: mesh
+    # HBONE port — fixed constant for ambient mode Waypoints.
+    # ztunnel connects here to hand off L7 traffic.
+    # Do not change this value.
+    port: 15008
+    protocol: HBONE

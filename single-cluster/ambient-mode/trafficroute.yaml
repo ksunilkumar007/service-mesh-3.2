@@ -1,0 +1,95 @@
+# =============================================================================
+# HTTPRoute — 90/10 traffic splitting for reviews Service via Waypoint
+# =============================================================================
+# PURPOSE:
+#   Splits traffic to the reviews Service 90% to reviews-v1 and 10%
+#   to reviews-v2. Enforced by the Waypoint proxy at L7.
+#
+# PREREQUISITE:
+#   reviews-services.yaml must be applied BEFORE this file.
+#   backendRefs (reviews-v1, reviews-v2) must exist as Services.
+#   If applied without the per-version Services:
+#     reason: BackendNotFound — HTTPRoute accepted but backends missing.
+#     Traffic falls back to default Kubernetes round-robin across all 3 versions.
+#
+# AMBIENT MODE EAST-WEST HTTPRoute PATTERN:
+#   parentRefs pointing to a Service (not a Gateway) is the ambient
+#   mode pattern for mesh-internal traffic splitting via the Waypoint.
+#
+#   Traffic flow:
+#     productpage -> reviews Service VIP:9080
+#     Waypoint intercepts (because namespace labelled use-waypoint)
+#     Waypoint applies HTTPRoute weights:
+#       90% -> reviews-v1 Service -> reviews-v1 pod (no stars)
+#       10% -> reviews-v2 Service -> reviews-v2 pod (black stars)
+#
+# CONTRAST WITH INGRESS HTTPRoute (north-south):
+#   Ingress:    parentRefs -> kind: Gateway  (external traffic in)
+#   East-west:  parentRefs -> kind: Service  (mesh-internal routing)
+#
+# WHY THIS REQUIRES A WAYPOINT:
+#   Traffic splitting is L7 — requires HTTP request inspection.
+#   ztunnel operates at L4 and cannot split by weight.
+#   Without a Waypoint, this HTTPRoute is silently ignored.
+#
+# HOW TO IDENTIFY WHICH VERSION RESPONDS:
+#   reviews-v1: no star ratings shown
+#   reviews-v2: black star ratings shown
+#   reviews-v3: red star ratings shown (not in this route)
+#
+# CANARY PROMOTION PATTERN:
+#   Week 1: v1=90, v2=10
+#   Week 2: v1=75, v2=25
+#   Week 3: v1=50, v2=50
+#   Week 4: v1=0,  v2=100
+#
+# VERIFY AFTER APPLYING:
+#   oc get httproute reviews -n bookinfo -o yaml | grep -A5 "status:"
+#   # Expect: Accepted=True AND ResolvedBackendRefs=True
+#   # NOT: BackendNotFound
+#
+#   for i in $(seq 1 10); do
+#     oc exec -n bookinfo deploy/productpage-v1 -- \
+#       python3 -c "
+#   import urllib.request
+#   r = urllib.request.urlopen('http://reviews:9080/reviews/1').read().decode()
+#   if 'color' not in r: print('v1 - no stars')
+#   elif 'black' in r: print('v2 - black stars')
+#   elif 'red' in r: print('v3 - red stars')
+#   "
+#   done
+#   # Expect: ~9x v1, ~1x v2
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  parentRefs:
+  # Points to the reviews Service — ambient east-west routing via Waypoint.
+  # group: "" = core API group (v1 Services, not a CRD)
+  - group: ""
+    kind: Service
+    name: reviews
+    port: 9080
+
+  rules:
+  - backendRefs:
+    # 90% -> reviews-v1 (no star ratings on productpage)
+    # Requires reviews-v1 Service from reviews-services.yaml
+    - name: reviews-v1
+      port: 9080
+      weight: 90
+
+    # 10% -> reviews-v2 (black star ratings on productpage)
+    # Requires reviews-v2 Service from reviews-services.yaml
+    - name: reviews-v2
+      port: 9080
+      weight: 10
+
+    # reviews-v3 excluded — receives zero traffic
+    # Add below to enable canary:
+    # - name: reviews-v3
+    #   port: 9080
+    #   weight: 0

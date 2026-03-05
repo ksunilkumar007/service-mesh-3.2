@@ -1,0 +1,77 @@
+# =============================================================================
+# PeerAuthentication — Namespace-scoped mTLS policy for bookinfo
+# =============================================================================
+# PURPOSE:
+#   Enforces STRICT mTLS specifically for the bookinfo namespace.
+#   Provides defence-in-depth — bookinfo's mTLS posture is independent
+#   of the mesh-wide policy in peerauthentication.yaml.
+#
+# WHY THIS EXISTS ALONGSIDE THE MESH-WIDE POLICY:
+#   The mesh-wide policy (peerauthentication.yaml) sets STRICT for all
+#   namespaces. This namespace policy sets STRICT for bookinfo specifically.
+#
+#   They currently have the same effect — but serve different purposes:
+#
+#   1. Independence — if someone changes the mesh-wide policy to PERMISSIVE
+#      (e.g. to onboard a new namespace), bookinfo remains STRICT.
+#      bookinfo's security posture does not depend on mesh-wide config.
+#
+#   2. Clarity — bookinfo's policy is visible in the bookinfo namespace.
+#      An operator looking at bookinfo config sees the policy directly
+#      without needing to check istio-system.
+#
+#   3. Precedence control — namespace policy overrides mesh-wide.
+#      If you ever need bookinfo to be PERMISSIVE temporarily (e.g. for
+#      a non-mesh monitoring tool), you change THIS policy, not the
+#      mesh-wide one. Other namespaces are not affected.
+#
+# SCOPE:
+#   No selector field = applies to ALL pods in the bookinfo namespace.
+#   To scope to specific pods, add:
+#     spec:
+#       selector:
+#         matchLabels:
+#           app: productpage
+#   This would apply only to productpage pods, leaving other bookinfo
+#   pods to inherit from the namespace or mesh-wide policy.
+#
+# WORKLOAD-LEVEL OVERRIDE EXAMPLE:
+#   If you had a legacy service in bookinfo that cannot do mTLS:
+#     apiVersion: security.istio.io/v1
+#     kind: PeerAuthentication
+#     metadata:
+#       name: legacy-service-permissive
+#       namespace: bookinfo
+#     spec:
+#       selector:
+#         matchLabels:
+#           app: legacy-service
+#       mtls:
+#         mode: PERMISSIVE
+#   This overrides STRICT only for that specific workload.
+#   All other bookinfo workloads remain STRICT.
+#
+# VERIFY:
+#   oc get peerauthentication -n bookinfo
+#   oc get peerauthentication -A  # see all policies across namespaces
+#
+#   Test STRICT is enforced — a non-enrolled pod cannot reach bookinfo:
+#     oc new-project test-plain
+#     # Do NOT label with istio.io/dataplane-mode=ambient
+#     oc run test --image=curlimages/curl -n test-plain -- sleep 3600
+#     oc exec -n test-plain test -- curl http://productpage.bookinfo:9080/productpage
+#     # Should fail — STRICT mode rejects plain text from non-mesh pod
+# =============================================================================
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: bookinfo-strict
+  namespace: bookinfo
+spec:
+  # No selector = applies to ALL pods in bookinfo namespace.
+  # Add selector.matchLabels to scope to specific workloads.
+  mtls:
+    # STRICT — plain text connections rejected for all bookinfo pods.
+    # Overrides mesh-wide policy for this namespace.
+    # Change to PERMISSIVE here without affecting other namespaces.
+    mode: STRICT

@@ -1,0 +1,84 @@
+# =============================================================================
+# PeerAuthentication — Mesh-wide mTLS policy
+# =============================================================================
+# PURPOSE:
+#   Sets the default mTLS mode for ALL namespaces in the mesh.
+#   This is the mesh-wide baseline policy — every enrolled namespace
+#   inherits this unless overridden by a namespace or workload-scoped
+#   PeerAuthentication.
+#
+# SCOPE CONVENTION:
+#   A PeerAuthentication named "default" in the "istio-system" namespace
+#   is the special mesh-wide policy. Istio recognises this combination
+#   specifically. Any other name or namespace is namespace/workload scoped.
+#
+# PRECEDENCE (most specific wins):
+#   Workload-level (with selector)      <- most specific, wins always
+#     overrides
+#   Namespace-level (in app namespace)
+#     overrides
+#   Mesh-wide (istio-system/default)    <- this file, least specific
+#
+# STRICT vs PERMISSIVE vs DISABLE:
+#
+#   STRICT
+#     Only mTLS traffic accepted at the destination.
+#     Plain text connections are rejected.
+#     Use for: production, any namespace where all workloads are mesh-enrolled.
+#     Effect: non-mesh pods (not enrolled in ambient or sidecar) CANNOT
+#             send plain text to mesh pods. They must be enrolled first.
+#
+#   PERMISSIVE (Istio default if no PeerAuthentication exists)
+#     Both mTLS and plain text accepted.
+#     Use for: migration — allows gradual enrollment of namespaces.
+#     Risk: plain text traffic is accepted, reducing security posture.
+#
+#   DISABLE
+#     Plain text only. mTLS rejected.
+#     Use for: specific workloads that cannot support mTLS (rare).
+#
+# IS STRICT REDUNDANT IN AMBIENT MODE?
+#   ztunnel already encrypts ALL traffic between enrolled pods with HBONE.
+#   So why apply STRICT PeerAuthentication?
+#
+#   1. Prevents non-enrolled pods from sending plain text to enrolled pods.
+#      A pod in a namespace WITHOUT istio.io/dataplane-mode=ambient is
+#      not enrolled — it sends plain text. STRICT rejects that traffic.
+#
+#   2. Documents intent — makes security posture explicit and auditable.
+#      "This mesh enforces mTLS" is visible in config, not just behaviour.
+#
+#   3. Defence-in-depth — policy is enforced even if ztunnel has a bug
+#      or is temporarily unavailable during a restart.
+#
+#   4. Required for Waypoint L7 policy — the Waypoint checks
+#      PeerAuthentication to determine how to handle incoming connections.
+#
+# WHEN TO USE PERMISSIVE:
+#   During initial migration when some namespaces are not yet enrolled.
+#   Start with PERMISSIVE mesh-wide, then tighten namespace by namespace.
+#   Once ALL namespaces are enrolled, switch mesh-wide to STRICT.
+#
+# APPLY ORDER:
+#   Apply AFTER ztunnel is healthy and bookinfo is enrolled.
+#   Applying STRICT before enrollment will break traffic from
+#   non-enrolled namespaces to bookinfo.
+#
+# VERIFY:
+#   oc get peerauthentication -n istio-system
+#   istioctl analyze -n bookinfo
+#   # Should show no policy warnings
+# =============================================================================
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  # "default" in "istio-system" = mesh-wide policy (Istio convention)
+  # Do not change the name or namespace — the combination is special.
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    # STRICT — only mTLS traffic accepted mesh-wide.
+    # Plain text connections from non-enrolled pods are rejected.
+    # Change to PERMISSIVE during migration if needed.
+    mode: STRICT

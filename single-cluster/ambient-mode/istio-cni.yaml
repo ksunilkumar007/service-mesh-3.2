@@ -1,0 +1,61 @@
+# =============================================================================
+# IstioCNI — Istio CNI DaemonSet
+# =============================================================================
+# PURPOSE:
+#   Deploys the Istio CNI plugin on every node. The CNI plugin is responsible
+#   for intercepting pod traffic and redirecting it to ztunnel transparently
+#   at pod creation time — without requiring init containers or pod restarts.
+#
+# DEPENDENCY:
+#   Must be applied BEFORE ztunnel.yaml. istiod reports IstioCNINotFound
+#   until this CR is healthy.
+#
+# WHAT IT DOES AT POD CREATION:
+#   1. kubelet calls the CNI plugin for every new pod
+#   2. CNI checks if the pod's namespace has label:
+#        istio.io/dataplane-mode=ambient
+#   3. If YES — inserts iptables rules in the pod's network namespace
+#               redirecting traffic to ztunnel on port 15008 (HBONE)
+#   4. If NO  — does nothing, pod gets normal cluster networking
+#
+# WITHOUT THIS:
+#   The only alternative would be an init container in every pod to insert
+#   iptables rules — which defeats the purpose of ambient sidecar-less mode.
+# =============================================================================
+apiVersion: sailoperator.io/v1
+kind: IstioCNI
+metadata:
+  name: default
+spec:
+  # Namespace where the CNI DaemonSet pod runs.
+  # Must be labelled istio-discovery=enabled so istiod watches it.
+  namespace: istio-cni
+
+  # ambient profile activates ambient-specific CNI behaviour.
+  # Do not use "default" profile here — that targets sidecar mode.
+  profile: ambient
+
+  values:
+    cni:
+      ambient:
+        # reconcileIptablesOnStartup: true
+        #
+        # CRITICAL for SNO and single-node clusters.
+        #
+        # Problem it solves:
+        #   When the CNI pod restarts (node reboot, operator upgrade),
+        #   iptables rules previously inserted into running pod network
+        #   namespaces become stale or are lost entirely.
+        #
+        # Without this flag:
+        #   All enrolled pods lose traffic interception silently.
+        #   ztunnel stops seeing their traffic.
+        #   Pods must be restarted individually to restore redirection.
+        #   On SNO this breaks ALL enrolled pods simultaneously.
+        #
+        # With this flag:
+        #   On CNI pod startup, it walks every running pod on the node,
+        #   checks if the pod's namespace is enrolled in ambient,
+        #   and re-inserts iptables rules for any pod that lost them.
+        #   No pod restarts required.
+        reconcileIptablesOnStartup: true

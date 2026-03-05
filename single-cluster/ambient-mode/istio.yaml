@@ -1,0 +1,112 @@
+# =============================================================================
+# Istio — Control Plane (istiod)
+# =============================================================================
+# PURPOSE:
+#   Deploys istiod — the Istio control plane — via the Sail Operator.
+#   istiod is responsible for:
+#     - Service discovery (watches Kubernetes API for Services and Endpoints)
+#     - xDS config push (tells ztunnel and Waypoints how to route traffic)
+#     - Certificate authority (issues SPIFFE mTLS certs to workloads)
+#     - Policy distribution (pushes AuthorizationPolicy, PeerAuthentication)
+#
+# OPERATOR INSTALL LESSONS LEARNED (RHACM clusters):
+#   1. RHACM registers its own Subscription CRD that shadows OLM's.
+#      Always use full API group:
+#        oc get subscription.operators.coreos.com -n openshift-operators
+#        NOT: oc get subscription (hits RHACM CRD instead)
+#
+#   2. Package name in catalog differs from the operator name you know.
+#      Always verify first:
+#        oc get packagemanifest -n openshift-marketplace | grep -i mesh
+#      Result: servicemeshoperator3 (Red Hat) NOT sailoperator
+#              sailoperator only exists in community-operators
+#
+#   3. Correct Subscription for OSSM 3.2:
+#        name: servicemeshoperator3
+#        source: redhat-operators
+#        channel: stable-3.2
+#        currentCSV: servicemeshoperator3.v3.2.2
+#
+# DEPENDENCY CHAIN:
+#   Istio CR (this file)
+#     └── waits for IstioCNI CR  → reports IstioCNINotFound until CNI is healthy
+#           └── then ZTunnel CR  → full ambient data plane active
+#
+# WHAT HAPPENS WHEN YOU APPLY THIS:
+#   1. Sail Operator reads this CR
+#   2. Creates istiod Deployment in istio-system namespace
+#   3. istiod starts but reports IstioCNINotFound (expected)
+#   4. Once CNI and ztunnel are healthy, status moves to Healthy
+# =============================================================================
+apiVersion: sailoperator.io/v1
+kind: Istio
+metadata:
+  # name becomes the revision name.
+  # "default" means namespaces enroll with: istio.io/dataplane-mode=ambient
+  # If you used "mesh-1" here, namespaces would need: istio.io/rev=mesh-1
+  # Revision names are how multiple control planes coexist on one cluster.
+  name: default
+spec:
+  # Namespace where the istiod pod runs.
+  # Must be labelled istio-discovery=enabled before applying this CR
+  # so istiod discovers itself and its own services on first boot.
+  namespace: istio-system
+
+  # profile: ambient
+  #   Activates the ztunnel data plane — no Envoy sidecars injected into pods.
+  #   Pods enrolled in ambient stay 1/1 (not 2/2 like sidecar mode).
+  #
+  # DO NOT use profile: default here — that enables sidecar injection.
+  # You would see 2/2 pods on namespaces labelled istio-injection=enabled.
+  #
+  # How enrollment works in ambient mode:
+  #   Label namespace: istio.io/dataplane-mode=ambient
+  #   CNI plugin detects the label and inserts iptables rules at pod creation.
+  #   No pod restarts required — existing pods are enrolled immediately.
+  profile: ambient
+
+  values:
+    pilot:
+      # trustedZtunnelNamespace: ztunnel
+      #
+      # SECURITY BOUNDARY — do not change without understanding the impact.
+      #
+      # istiod only trusts ztunnel pods running in THIS specific namespace
+      # as legitimate node proxies. A ztunnel pod in any other namespace
+      # is treated as untrusted and cannot participate in the mesh.
+      #
+      # Why this matters:
+      #   ztunnel operates with node-level privilege — it intercepts ALL
+      #   pod traffic on its node. A compromised ztunnel in an arbitrary
+      #   namespace could intercept and inspect all mesh traffic.
+      #   Pinning trust to a single namespace limits the blast radius.
+      trustedZtunnelNamespace: ztunnel
+
+    meshConfig:
+      # discoverySelectors
+      #
+      # CRITICAL FOR SNO AND RHACM CLUSTERS.
+      #
+      # Without this: istiod watches ALL namespaces in the cluster.
+      # On your SNO, RHACM alone has 30+ namespaces. istiod would process
+      # every Service, Endpoint, and Pod change across all of them —
+      # consuming significant CPU and memory on an already-loaded node.
+      #
+      # With this: istiod ONLY watches namespaces labelled:
+      #   istio-discovery=enabled
+      #
+      # Namespaces labelled before applying this CR:
+      #   istio-system   (control plane — istiod needs to see itself)
+      #   ztunnel        (data plane — istiod needs to trust ztunnel pods)
+      #   istio-cni      (CNI plugin — istiod monitors CNI health)
+      #
+      # Namespaces to label before enrolling workloads:
+      #   bookinfo       (sample app)
+      #   istio-ingress  (ingress gateway)
+      #   egress-gateway (egress waypoint)
+      #
+      # A namespace WITHOUT this label is completely invisible to istiod.
+      # Services in unlabelled namespaces cannot be mesh destinations.
+      discoverySelectors:
+      - matchLabels:
+          istio-discovery: enabled

@@ -1,0 +1,107 @@
+# =============================================================================
+# Reviews per-version Services — required for HTTPRoute traffic splitting
+# =============================================================================
+# PURPOSE:
+#   Creates individual Services for each reviews version so the HTTPRoute
+#   can reference them as distinct backends for weighted traffic splitting.
+#
+# WHY PER-VERSION SERVICES ARE NEEDED:
+#   The bookinfo app ships with a single "reviews" Service that selects
+#   ALL reviews pods (v1, v2, v3) via label: app=reviews.
+#   Kubernetes round-robins across all three versions equally.
+#
+#   Gateway API HTTPRoute backendRefs point to Services, not pod labels.
+#   To split traffic by version, each version needs its own Service
+#   that selects ONLY pods of that version.
+#
+#   reviews Service (existing):
+#     selector: app=reviews          <- matches v1 + v2 + v3
+#
+#   reviews-v1 Service (this file):
+#     selector: app=reviews, version=v1  <- matches ONLY v1 pods
+#
+#   reviews-v2 Service (this file):
+#     selector: app=reviews, version=v2  <- matches ONLY v2 pods
+#
+# CONTRAST WITH ISTIO VirtualService (sidecar mode):
+#   In sidecar mode, traffic splitting used DestinationRule subsets:
+#     spec:
+#       subsets:
+#       - name: v1
+#         labels:
+#           version: v1
+#   VirtualService referenced subset names, not Services.
+#
+#   In ambient mode with Gateway API, there are no subsets.
+#   Per-version Services replace the subset concept.
+#   This is more explicit and Kubernetes-native.
+#
+# SERVICE TYPE — ClusterIP (not headless):
+#   These are standard ClusterIP Services.
+#   The Waypoint uses them as backend references in the HTTPRoute.
+#   Traffic goes: Waypoint -> reviews-v1 ClusterIP -> reviews-v1 pod
+#
+# VERIFY AFTER APPLYING:
+#   oc get svc -n bookinfo | grep reviews
+#   # Should show: reviews, reviews-v1, reviews-v2
+#
+#   oc get endpoints reviews-v1 -n bookinfo
+#   # Should show exactly 1 endpoint (the reviews-v1 pod IP)
+#
+#   oc get endpoints reviews-v2 -n bookinfo
+#   # Should show exactly 1 endpoint (the reviews-v2 pod IP)
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v1
+  namespace: bookinfo
+  labels:
+    app: reviews
+    version: v1
+spec:
+  ports:
+  - port: 9080
+    name: http
+  # Selects ONLY reviews-v1 pods
+  # The version=v1 label distinguishes it from v2 and v3
+  selector:
+    app: reviews
+    version: v1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v2
+  namespace: bookinfo
+  labels:
+    app: reviews
+    version: v2
+spec:
+  ports:
+  - port: 9080
+    name: http
+  # Selects ONLY reviews-v2 pods (shows black stars on productpage)
+  selector:
+    app: reviews
+    version: v2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-v3
+  namespace: bookinfo
+  labels:
+    app: reviews
+    version: v3
+spec:
+  ports:
+  - port: 9080
+    name: http
+  # Selects ONLY reviews-v3 pods (shows red stars on productpage)
+  # Created but not included in HTTPRoute weights — receives zero traffic
+  # Add to HTTPRoute backendRefs with weight to enable canary promotion
+  selector:
+    app: reviews
+    version: v3

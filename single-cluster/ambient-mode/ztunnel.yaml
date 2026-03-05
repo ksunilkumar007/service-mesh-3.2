@@ -1,0 +1,129 @@
+# =============================================================================
+# ZTunnel — Per-node L4 proxy and HBONE tunnel (ambient data plane)
+# =============================================================================
+# PURPOSE:
+#   Deploys the ztunnel DaemonSet — one pod per node. ztunnel is the core
+#   of the ambient data plane. It provides:
+#     - Transparent L4 mTLS encryption for all enrolled pod traffic
+#     - HBONE (HTTP-Based Overlay Network Environment) tunnelling between nodes
+#     - L4 AuthorizationPolicy enforcement (IP, port, SPIFFE principal)
+#     - SPIFFE workload identity for every enrolled pod
+#
+# WHAT ZTUNNEL DOES ON YOUR NODE:
+#   Every packet from an enrolled pod is intercepted by ztunnel via the
+#   iptables rules inserted by the CNI plugin. ztunnel then:
+#     1. Identifies the source pod's SPIFFE identity from its ServiceAccount
+#     2. Wraps the packet in an HBONE tunnel (mTLS on port 15008)
+#     3. Sends it to the ztunnel on the destination node
+#     4. Destination ztunnel unwraps and delivers to the target pod
+#
+#   The pod never knows any of this happened. It sends plain TCP.
+#   ztunnel handles all encryption transparently at the node level.
+#
+# L4 vs L7 — what ztunnel handles vs what it does not:
+#
+#   ztunnel handles (L4):
+#     - TCP connection establishment and mTLS wrapping
+#     - SPIFFE identity (who is this workload?)
+#     - Port-based policy (is this port allowed?)
+#     - Source principal matching (is this ServiceAccount allowed?)
+#
+#   ztunnel does NOT handle (L7) — needs Waypoint proxy:
+#     - HTTP header matching (e.g. x-user-role: admin)
+#     - HTTP method matching (GET vs POST)
+#     - JWT token validation
+#     - Traffic splitting by weight (90/10 across versions)
+#     - gRPC-specific routing
+#
+#   If you write an AuthorizationPolicy with HTTP attributes (method, path,
+#   headers) and there is NO Waypoint deployed for that namespace/service,
+#   the policy is silently ignored at L4. Always deploy a Waypoint when
+#   you need L7 policy enforcement.
+#
+# CONFIGURATION SOURCE:
+#   Unlike Istio and IstioCNI CRs which have extensive values blocks,
+#   ZTunnel has a minimal CR spec. ztunnel receives its full runtime
+#   configuration via xDS pushed from istiod — not from this CR.
+#   This CR only tells the Sail Operator WHERE to deploy the DaemonSet
+#   and which profile to use.
+#
+# API VERSION — IMPORTANT LAB OBSERVATION:
+#   Upstream Sail Operator documentation and older manifests reference:
+#     apiVersion: sailoperator.io/v1alpha1
+#
+#   On servicemeshoperator3.v3.2.2 (OCP 4.20), ZTunnel has been
+#   promoted to stable API:
+#     apiVersion: sailoperator.io/v1
+#
+#   Always verify before applying on a new cluster:
+#     oc api-resources | grep ztunnel
+#   Output on this cluster:
+#     ztunnels  sailoperator.io/v1  false  ZTunnel
+#
+#   Applying v1alpha1 on a cluster that only has v1 will fail with:
+#     "no matches for kind ZTunnel in version sailoperator.io/v1alpha1"
+#
+# DEPENDENCY CHAIN:
+#   1. istio.yaml       → istiod Running, status: IstioCNINotFound
+#   2. istio-cni.yaml   → CNI DaemonSet Running, status: ZTunnelNotFound
+#   3. ztunnel.yaml     → ztunnel DaemonSet Running, status: Healthy  ← this file
+#
+#   Do NOT apply this before istio-cni.yaml is Healthy.
+#
+# NAMESPACE AND TRUST:
+#   ztunnel runs in its own dedicated namespace separate from istio-system.
+#   This namespace is referenced in istio.yaml as:
+#     pilot.trustedZtunnelNamespace: ztunnel
+#
+#   istiod ONLY grants node-proxy trust to ztunnel pods running in this
+#   specific namespace. A ztunnel pod anywhere else is untrusted.
+#
+#   IMPORTANT: Do not deploy any other workloads in the ztunnel namespace.
+#   It is a security boundary. Keep it dedicated to ztunnel only.
+#
+# SNO BEHAVIOUR:
+#   Single Node OpenShift = 1 node = 1 ztunnel pod.
+#   On multi-node clusters, one ztunnel pod runs per node automatically
+#   (DaemonSet scheduling). Each node's ztunnel only handles pods on
+#   that node — there is no cross-node ztunnel communication for
+#   local traffic.
+#
+# POD SECURITY:
+#   ztunnel requires elevated privileges to insert iptables rules into
+#   pod network namespaces. The ztunnel namespace must allow privileged
+#   workloads. If your cluster enforces pod security admission at the
+#   namespace level (pod-security.kubernetes.io/enforce=restricted),
+#   ztunnel pods will fail to start with a security context error.
+#   The Sail Operator handles this automatically by adding the required
+#   security context exceptions to the ztunnel namespace.
+#
+# VERIFY AFTER APPLYING:
+#   # ZTunnel CR healthy
+#   oc get ztunnel default
+#
+#   # DaemonSet pod running (1 pod per node)
+#   oc get pods -n ztunnel
+#
+#   # Istio CR moves to Healthy (all three CRs now satisfied)
+#   oc get istio default
+#
+#   # ztunnel is capturing workloads (after namespace enrollment)
+#   istioctl x ztunnel-config workload -n <namespace>
+# =============================================================================
+apiVersion: sailoperator.io/v1
+kind: ZTunnel
+metadata:
+  name: default
+spec:
+  # Must match trustedZtunnelNamespace in istio.yaml.
+  # istiod will not grant node-proxy trust to ztunnel pods
+  # in any namespace other than this one.
+  # Keep this namespace dedicated — no other workloads here.
+  namespace: ztunnel
+
+  # ambient profile — required.
+  # Must match the profile used in istio.yaml and istio-cni.yaml.
+  # All three CRs must use the same profile — mixing profiles
+  # (e.g. ambient here, default in istio.yaml) will cause
+  # unexpected behaviour and failed enrollments.
+  profile: ambient
