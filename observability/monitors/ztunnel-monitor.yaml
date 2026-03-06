@@ -1,0 +1,44 @@
+# =============================================================================
+# ztunnel metrics Service + ServiceMonitor
+# =============================================================================
+# ztunnel exposes L4 metrics on port 15020 (ztunnel-stats).
+# No Service exists by default in the ztunnel namespace.
+#
+# METRICS INCLUDE:
+#   ztunnel_inbound_bytes_total    bytes received through ztunnel
+#   ztunnel_outbound_bytes_total   bytes sent through ztunnel
+#   ztunnel_connection_*           connection counts and durations
+#   ztunnel_policy_*               policy enforcement stats
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: ztunnel
+  namespace: ztunnel
+  labels:
+    app: ztunnel
+    service: ztunnel
+spec:
+  selector:
+    app: ztunnel
+  ports:
+  - name: http-monitoring
+    port: 15020
+    targetPort: 15020
+    protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ztunnel-monitor
+  namespace: ztunnel
+spec:
+  targetLabels:
+  - app
+  selector:
+    matchLabels:
+      service: ztunnel
+  endpoints:
+  - port: http-monitoring
+    interval: 30s
+    path: /metrics

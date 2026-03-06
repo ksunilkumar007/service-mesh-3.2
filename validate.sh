@@ -294,6 +294,81 @@ DENIED=$(oc exec -n bookinfo deploy/ratings-v1 -- curl -o /dev/null -s -w "%{htt
 if [[ "$DENIED" == "000" ]]; then pass "ratings -> github.com: blocked (DENY at Waypoint)"; else fail "ratings -> github.com: ${DENIED} (expected 000)"; fi
 
 # =============================================================================
+# SECTION 11 — Distributed Tracing
+# =============================================================================
+section "Distributed Tracing (Tempo + OTEL)"
+
+TEMPO_PODS=$(oc get pods -n tracing --no-headers 2>/dev/null | grep -c "1/1\|2/2\|3/3")
+if [[ "$TEMPO_PODS" -ge 5 ]]; then pass "Tempo pods: ${TEMPO_PODS} Running"; else fail "Tempo pods: only ${TEMPO_PODS} ready (expected 5+)"; fi
+
+TEMPO_READY=$(oc get tempostack tempo -n tracing -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+if [[ "$TEMPO_READY" == "True" ]]; then pass "TempoStack: Ready"; else fail "TempoStack: Ready=${TEMPO_READY}"; fi
+
+OTEL=$(oc get pods -n tracing --no-headers 2>/dev/null | grep "otel-collector" | head -1 | awk '{print $2}')
+if [[ "$OTEL" == "1/1" ]]; then pass "otel-collector: 1/1 Running"; else fail "otel-collector: ${OTEL}"; fi
+
+TEL=$(oc get telemetry mesh-tracing -n istio-system --no-headers 2>/dev/null | wc -l)
+if [[ "$TEL" -ge 1 ]]; then pass "Telemetry CR: mesh-tracing present"; else fail "Telemetry CR: mesh-tracing not found"; fi
+
+OTEL_CLUSTER=$(istioctl pc cluster -n bookinfo deploy/waypoint 2>/dev/null | grep "otel-collector" | wc -l)
+if [[ "$OTEL_CLUSTER" -ge 1 ]]; then pass "Waypoint: otel-collector cluster configured"; else fail "Waypoint: otel-collector cluster missing"; fi
+
+ENABLE_TRACING=$(oc get configmap istio -n istio-system -o jsonpath='{.data.mesh}' 2>/dev/null | grep "enableTracing")
+if [[ -n "$ENABLE_TRACING" ]]; then pass "meshConfig: enableTracing enabled"; else fail "meshConfig: enableTracing missing"; fi
+
+UI_AVAIL=$(oc get uiplugin distributed-tracing -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+if [[ "$UI_AVAIL" == "True" ]]; then pass "UIPlugin distributed-tracing: Available"; else fail "UIPlugin distributed-tracing: Available=${UI_AVAIL}"; fi
+
+BLOCKS=$(oc logs -n tracing tempo-tempo-ingester-0 --since=30m 2>/dev/null | grep -c "flushing block")
+if [[ "$BLOCKS" -ge 1 ]]; then pass "Tempo ingester: trace blocks flushed to S3"; else warn "Tempo ingester: no blocks flushed recently (generate traffic first)"; fi
+
+# =============================================================================
+# SECTION 12 — Observability (Prometheus scraping)
+# =============================================================================
+section "Observability (Prometheus scraping)"
+
+SM_ISTIOD=$(oc get servicemonitor istiod-monitor -n istio-system --no-headers 2>/dev/null | wc -l)
+if [[ "$SM_ISTIOD" -ge 1 ]]; then pass "ServiceMonitor: istiod-monitor present"; else fail "ServiceMonitor: istiod-monitor missing"; fi
+
+SM_ZTUNNEL=$(oc get servicemonitor ztunnel-monitor -n ztunnel --no-headers 2>/dev/null | wc -l)
+if [[ "$SM_ZTUNNEL" -ge 1 ]]; then pass "ServiceMonitor: ztunnel-monitor present"; else fail "ServiceMonitor: ztunnel-monitor missing"; fi
+
+PM_WAYPOINT=$(oc get podmonitor waypoint-monitor -n bookinfo --no-headers 2>/dev/null | wc -l)
+if [[ "$PM_WAYPOINT" -ge 1 ]]; then pass "PodMonitor: waypoint-monitor present"; else fail "PodMonitor: waypoint-monitor missing"; fi
+
+PROM_POD=$(oc get pods -n openshift-user-workload-monitoring --no-headers 2>/dev/null | grep "prometheus-user-workload-0" | awk '{print $1}')
+if [[ -n "$PROM_POD" ]]; then
+  TARGETS=$(oc exec -n openshift-user-workload-monitoring "$PROM_POD" -c prometheus -- \
+    curl -s http://localhost:9090/api/v1/targets 2>/dev/null | \
+    python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+up=[t for t in d['data']['activeTargets']
+    if t['labels'].get('namespace','') in ('istio-system','ztunnel','bookinfo')
+    and t['health']=='up']
+print(len(up))
+" 2>/dev/null)
+  if [[ "$TARGETS" -ge 3 ]]; then pass "Prometheus targets: ${TARGETS} up (istiod + ztunnel + waypoint)"; else fail "Prometheus targets: only ${TARGETS} up (expected 3+)"; fi
+
+  PILOT_METRICS=$(oc exec -n openshift-user-workload-monitoring "$PROM_POD" -c prometheus -- \
+    curl -s "http://localhost:9090/api/v1/query?query=pilot_xds_pushes" 2>/dev/null | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['data']['result']))" 2>/dev/null)
+  if [[ "$PILOT_METRICS" -ge 1 ]]; then pass "istiod metrics: pilot_xds_pushes present"; else fail "istiod metrics: pilot_xds_pushes missing"; fi
+
+  WAYPOINT_METRICS=$(oc exec -n openshift-user-workload-monitoring "$PROM_POD" -c prometheus -- \
+    curl -s "http://localhost:9090/api/v1/query?query=envoy_http_downstream_rq_total" 2>/dev/null | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['data']['result']))" 2>/dev/null)
+  if [[ "$WAYPOINT_METRICS" -ge 1 ]]; then pass "Waypoint metrics: envoy_http_downstream_rq_total present"; else fail "Waypoint metrics: envoy_http_downstream_rq_total missing"; fi
+
+  ZTUNNEL_METRICS=$(oc exec -n openshift-user-workload-monitoring "$PROM_POD" -c prometheus -- \
+    curl -s "http://localhost:9090/api/v1/query?query=workload_manager_active_proxy_count" 2>/dev/null | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['data']['result']))" 2>/dev/null)
+  if [[ "$ZTUNNEL_METRICS" -ge 1 ]]; then pass "ztunnel metrics: workload_manager_active_proxy_count present"; else fail "ztunnel metrics: workload_manager_active_proxy_count missing"; fi
+else
+  fail "prometheus-user-workload-0 pod not found"
+fi
+
+# =============================================================================
 # SUMMARY
 # =============================================================================
 echo -e "\n${BLUE}━━━ Summary ━━━${NC}"

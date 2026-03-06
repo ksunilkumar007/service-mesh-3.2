@@ -1,0 +1,45 @@
+# =============================================================================
+# istiod metrics Service + ServiceMonitor
+# =============================================================================
+# istiod exposes Prometheus metrics on port 15014 (http-monitoring).
+# The existing istiod Service only exposes 15010, 15012, 15017, 443.
+# This Service adds port 15014 for Prometheus scraping.
+#
+# METRICS INCLUDE:
+#   pilot_k8s_reg_events        resource updates from Kubernetes
+#   pilot_xds_pushes            xDS config pushes to proxies
+#   pilot_xds_push_errors       push errors
+#   pilot_conflict_outbound     routing conflicts
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: istiod-monitor
+  namespace: istio-system
+  labels:
+    app: istiod
+    istio: pilot
+spec:
+  selector:
+    app: istiod
+  ports:
+  - name: http-monitoring
+    port: 15014
+    targetPort: 15014
+    protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod-monitor
+  namespace: istio-system
+spec:
+  targetLabels:
+  - app
+  selector:
+    matchLabels:
+      istio: pilot
+  endpoints:
+  - port: http-monitoring
+    interval: 30s
+    path: /metrics
