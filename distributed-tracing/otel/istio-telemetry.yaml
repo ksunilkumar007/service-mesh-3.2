@@ -1,0 +1,17 @@
+# =============================================================================
+# Telemetry CR — configure Istio to export traces to OTEL collector
+# =============================================================================
+# namespace: istio-system = mesh-wide (applies to all enrolled namespaces)
+# provider: otel-tracing  = matches extensionProviders name in Istio CR
+# sampling: 100%          = trace every request (reduce in production)
+# =============================================================================
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: mesh-tracing
+  namespace: istio-system
+spec:
+  tracing:
+  - providers:
+    - name: otel-tracing
+    randomSamplingPercentage: 100

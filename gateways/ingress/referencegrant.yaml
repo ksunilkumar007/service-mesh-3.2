@@ -1,0 +1,52 @@
+# =============================================================================
+# ReferenceGrant — allows bookinfo-ingress to use bookinfo Waypoint
+# =============================================================================
+# PURPOSE:
+#   Grants permission for workloads in bookinfo-ingress namespace to
+#   reference and use the Waypoint in the bookinfo namespace.
+#
+# WHY THIS IS NEEDED:
+#   The bookinfo Waypoint enforces AuthorizationPolicy for traffic
+#   destined for bookinfo Services (productpage, reviews, etc).
+#   The ingress gateway pod is in bookinfo-ingress namespace.
+#
+#   By default, cross-namespace Waypoint references are not allowed.
+#   Without this ReferenceGrant:
+#     - gateway pod: PROTOCOL=TCP, WAYPOINT=None
+#     - gateway traffic bypasses the bookinfo Waypoint
+#     - AuthorizationPolicy on productpage Service is not enforced
+#       for traffic originating from the gateway
+#
+#   With this ReferenceGrant:
+#     - bookinfo-ingress namespace can reference bookinfo/waypoint
+#     - ztunnel routes gateway outbound traffic via the bookinfo Waypoint
+#     - AuthorizationPolicy IS enforced for gateway -> productpage traffic
+#
+# PLACEMENT:
+#   ReferenceGrant must be in the SAME namespace as the resource being
+#   referenced (bookinfo — where the Waypoint lives).
+#   It grants FROM namespace permission to reference TO resource.
+#
+# AFTER APPLYING:
+#   Also label bookinfo-ingress namespace:
+#     oc label namespace bookinfo-ingress \
+#       istio.io/use-waypoint=waypoint \
+#       istio.io/waypoint-namespace=bookinfo
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: bookinfo-ingress-waypoint
+  # Must be in the same namespace as the Waypoint being referenced
+  namespace: bookinfo
+spec:
+  from:
+  - group: ""
+    kind: namespace
+    # Allow bookinfo-ingress namespace to reference resources in bookinfo
+    namespace: bookinfo-ingress
+  to:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    # Specific Waypoint being granted access to
+    name: waypoint

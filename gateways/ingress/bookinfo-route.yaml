@@ -1,0 +1,93 @@
+# =============================================================================
+# OCP Route — Exposes Istio ingress gateway via OCP Router
+# =============================================================================
+# PURPOSE:
+#   Creates an OpenShift Route that fronts the Istio ingress gateway Service.
+#   Required on bare metal / platform:None clusters where LoadBalancer
+#   Services cannot be auto-provisioned by a cloud provider.
+#
+# WHY OCP ROUTE INSTEAD OF LOADBALANCER SERVICE:
+#   On AWS/Azure/GCP: Gateway API creates type=LoadBalancer Service,
+#   cloud provisions NLB automatically, external IP assigned.
+#
+#   On this cluster (platform: None, HostNetwork router):
+#   LoadBalancer Services remain <pending> — no cloud integration.
+#   The OCP Router (HAProxy) is the external entry point.
+#   An OCP Route tells the router to forward matching traffic
+#   to the Istio gateway ClusterIP Service.
+#
+# TRAFFIC PATH:
+#   Browser -> DNS: bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io
+#           -> 10.10.10.10 (node IP, OCP Router hostNetwork)
+#           -> OCP Router (HAProxy) port 80
+#           -> OCP Route matches host header
+#           -> Istio Gateway Service (ClusterIP) port 80
+#           -> Istio Gateway pod (Envoy)
+#           -> HTTPRoute matches path
+#           -> productpage Service
+#           -> productpage pod
+#
+# TLS STRATEGY — edge termination:
+#   tls.termination: edge
+#   OCP Router terminates TLS using its wildcard certificate.
+#   Traffic between Router and Istio Gateway is plain HTTP (port 80).
+#   Traffic between Istio Gateway and bookinfo pods is mTLS via ztunnel.
+#
+#   Alternatives:
+#   passthrough  — Router passes encrypted traffic through to Gateway
+#                  Gateway must handle TLS termination (port 443)
+#                  Requires TLS certs on the Gateway
+#   reencrypt    — Router terminates TLS, re-encrypts to backend
+#                  More complex, use when end-to-end encryption required
+#
+# INSECURE EDGE TERMINATION:
+#   insecureEdgeTerminationPolicy: Redirect
+#   HTTP requests on port 80 are redirected to HTTPS by the router.
+#   Change to Allow to permit plain HTTP (not recommended for production).
+#
+# SERVICE NAME:
+#   The Sail Operator creates a Service named "bookinfo-gateway" in
+#   the bookinfo-ingress namespace when the Gateway CR is applied.
+#   This Route targets that Service on port 80.
+#
+#   Verify the Service exists before applying this Route:
+#     oc get svc bookinfo-gateway -n bookinfo-ingress
+#
+# VERIFY AFTER APPLYING:
+#   oc get route bookinfo -n bookinfo-ingress
+#   # Should show: HOST/PORT and TLS columns populated
+#
+#   curl -L http://bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io/productpage
+#   # -L follows redirect from HTTP to HTTPS
+#   # Expect: 200 OK with bookinfo HTML page
+# =============================================================================
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: bookinfo
+  namespace: bookinfo-ingress
+spec:
+  # Must match hostname in HTTPRoute and DNS wildcard
+  host: bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io
+
+  # Forward to the Istio Gateway Service (created by Sail Operator)
+  # Service name matches Gateway CR metadata.name: bookinfo-gateway-istio
+  to:
+    kind: Service
+    name: bookinfo-gateway-istio
+    weight: 100
+
+  port:
+    # Gateway listener is on port 80 (plain HTTP from router)
+    targetPort: 80
+
+  tls:
+    # Edge termination — OCP Router handles TLS with wildcard cert
+    # Traffic to gateway is plain HTTP
+    termination: edge
+
+    # Redirect HTTP -> HTTPS at the router level
+    # Change to Allow to permit plain HTTP access
+    insecureEdgeTerminationPolicy: Redirect
+
+  wildcardPolicy: None

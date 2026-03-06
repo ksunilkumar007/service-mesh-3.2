@@ -1,0 +1,84 @@
+# =============================================================================
+# TempoStack — distributed tracing backend
+# =============================================================================
+# PURPOSE:
+#   Deploys Tempo as a scalable tracing backend using NooBaa S3 storage.
+#   Receives traces from OTEL collector via OTLP gRPC.
+#   Exposes Jaeger-compatible query UI via OCP Route.
+#
+# STORAGE SECRET:
+#   NooBaa OBC creates: secret/tempo-bucket with AWS_* key names
+#   Tempo requires:     bucket, endpoint, access_key_id, access_key_secret
+#   These are DIFFERENT key names — create a separate secret:
+#
+#   BUCKET_NAME=$(oc get cm tempo-bucket -n tracing -o jsonpath='{.data.BUCKET_NAME}')
+#   BUCKET_HOST=$(oc get cm tempo-bucket -n tracing -o jsonpath='{.data.BUCKET_HOST}')
+#   BUCKET_PORT=$(oc get cm tempo-bucket -n tracing -o jsonpath='{.data.BUCKET_PORT}')
+#   ACCESS_KEY=$(oc get secret tempo-bucket -n tracing -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+#   SECRET_KEY=$(oc get secret tempo-bucket -n tracing -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
+#   oc create secret generic tempo-s3-secret -n tracing \
+#     --from-literal=bucket="${BUCKET_NAME}" \
+#     --from-literal=endpoint="https://${BUCKET_HOST}:${BUCKET_PORT}" \
+#     --from-literal=access_key_id="${ACCESS_KEY}" \
+#     --from-literal=access_key_secret="${SECRET_KEY}"
+#
+# TENANTS + GATEWAY:
+#   openshift mode requires gateway enabled.
+#   Gateway provides OAuth-backed authentication via OCP.
+#   tenantId must be a unique UUID across the lifetime of the deployment.
+#
+# VERIFY AFTER APPLYING:
+#   oc get tempostack tempo -n tracing
+#   # STATUS: Ready
+#
+#   oc get pods -n tracing
+#   # tempo-tempo-compactor-xxx         1/1  Running
+#   # tempo-tempo-distributor-xxx       1/1  Running
+#   # tempo-tempo-gateway-xxx           1/1  Running
+#   # tempo-tempo-ingester-xxx          1/1  Running
+#   # tempo-tempo-querier-xxx           1/1  Running
+#   # tempo-tempo-query-frontend-xxx    1/1  Running
+# =============================================================================
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: tempo
+  namespace: tracing
+spec:
+  storage:
+    secret:
+      name: tempo-s3-secret
+      type: s3
+    tls:
+      enabled: true
+      caName: openshift-service-ca.crt
+  storageSize: 10Gi
+  resources:
+    total:
+      limits:
+        memory: 2Gi
+        cpu: 2000m
+  retention:
+    global:
+      traces: 24h
+  replicationFactor: 1
+  template:
+    gateway:
+      enabled: true
+    distributor:
+      replicas: 1
+    ingester:
+      replicas: 1
+    compactor:
+      replicas: 1
+    querier:
+      replicas: 1
+    queryFrontend:
+      replicas: 1
+      jaegerQuery:
+        enabled: true
+  tenants:
+    mode: openshift
+    authentication:
+    - tenantName: dev
+      tenantId: "af0a3a1d-2d5a-4e8a-bd57-3e1f6b2c4d9a"

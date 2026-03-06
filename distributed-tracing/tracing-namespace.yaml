@@ -1,0 +1,18 @@
+# =============================================================================
+# tracing namespace — shared namespace for Tempo and OTEL collector
+# =============================================================================
+# istio-discovery=enabled     istiod watches this namespace
+# dataplane-mode=ambient      ztunnel enrolls Tempo + OTEL pods
+#
+# Single namespace for both components:
+#   + short service names work (no FQDN needed cross-namespace)
+#   + one namespace to label and manage on SNO
+#   + simpler Telemetry CR endpoint config
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tracing
+  labels:
+    istio-discovery: enabled
+    istio.io/dataplane-mode: ambient

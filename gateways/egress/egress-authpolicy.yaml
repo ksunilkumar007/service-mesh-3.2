@@ -1,0 +1,52 @@
+# =============================================================================
+# AuthorizationPolicy — egress access control enforced at Waypoint
+# =============================================================================
+# PURPOSE:
+#   Only productpage SA can reach github.com.
+#   All other mesh pods are denied at the egress Waypoint.
+#
+# NAMESPACE: istio-system (same as ServiceEntry)
+#   Policy must be in the same namespace as the targeted ServiceEntry.
+#   Cross-namespace targetRefs not supported in Istio 1.27:
+#     "cross namespace referencing is not currently supported"
+#
+# targetRefs -> ServiceEntry:
+#   Policy is bound to the ServiceEntry and enforced by the Waypoint
+#   the ServiceEntry is attached to (egress/egress-waypoint).
+#   Status shows: "bound to egress/egress-waypoint" (WaypointAccepted=True)
+#
+# WHY THIS WORKS (unlike previous broken attempt):
+#   BROKEN: selector: app=productpage + hosts field
+#     - hosts is L7 — ztunnel cannot enforce it
+#     - ztunnel silently drops hosts rule -> DENY everything inbound
+#     - Caused 503 on external access to productpage
+#
+#   CORRECT: targetRefs -> ServiceEntry (this file)
+#     - Enforced at Waypoint (L7 capable)
+#     - No effect on inbound traffic to any application pod
+#     - L7 attributes valid at Waypoint level
+#
+# VERIFIED ENFORCEMENT:
+#   productpage -> github.com: 200 OK  (ALLOW)
+#   ratings     -> github.com: exit 35 SSL connect error (DENY at Waypoint)
+# =============================================================================
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: github-egress-policy
+  # Same namespace as ServiceEntry — cross-namespace not supported in 1.27
+  namespace: istio-system
+spec:
+  targetRefs:
+  - group: networking.istio.io
+    kind: ServiceEntry
+    name: github-external
+    # No namespace field — would cause: "cross namespace referencing not supported"
+
+  action: ALLOW
+
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/bookinfo/sa/bookinfo-productpage

@@ -1,0 +1,39 @@
+# =============================================================================
+# ObjectBucketClaim — NooBaa S3 bucket for Tempo trace storage
+# =============================================================================
+# PURPOSE:
+#   Creates an S3-compatible bucket via NooBaa for TempoStack trace storage.
+#   NooBaa automatically creates a Secret and ConfigMap with credentials.
+#
+# WHAT GETS CREATED:
+#   Secret:    tempo-bucket  (keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+#   ConfigMap: tempo-bucket  (keys: BUCKET_NAME, BUCKET_HOST, BUCKET_PORT)
+#
+# IMPORTANT — KEY NAME MISMATCH:
+#   NooBaa uses AWS_* key names.
+#   TempoStack requires: bucket, endpoint, access_key_id, access_key_secret
+#   Must create a separate secret (tempo-s3-secret) with correct key names:
+#
+#   BUCKET_NAME=$(oc get cm tempo-bucket -n tracing -o jsonpath='{.data.BUCKET_NAME}')
+#   BUCKET_HOST=$(oc get cm tempo-bucket -n tracing -o jsonpath='{.data.BUCKET_HOST}')
+#   BUCKET_PORT=$(oc get cm tempo-bucket -n tracing -o jsonpath='{.data.BUCKET_PORT}')
+#   ACCESS_KEY=$(oc get secret tempo-bucket -n tracing -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+#   SECRET_KEY=$(oc get secret tempo-bucket -n tracing -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
+#   oc create secret generic tempo-s3-secret -n tracing \
+#     --from-literal=bucket="${BUCKET_NAME}" \
+#     --from-literal=endpoint="https://${BUCKET_HOST}:${BUCKET_PORT}" \
+#     --from-literal=access_key_id="${ACCESS_KEY}" \
+#     --from-literal=access_key_secret="${SECRET_KEY}"
+#
+# VERIFY:
+#   oc get obc tempo-bucket -n tracing
+#   # PHASE: Bound
+# =============================================================================
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: tempo-bucket
+  namespace: tracing
+spec:
+  generateBucketName: tempo
+  storageClassName: openshift-storage.noobaa.io

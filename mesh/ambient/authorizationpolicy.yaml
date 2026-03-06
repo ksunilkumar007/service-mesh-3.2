@@ -1,0 +1,96 @@
+# =============================================================================
+# AuthorizationPolicy — L7 access control for productpage via Waypoint
+# =============================================================================
+# PURPOSE:
+#   Controls which clients can access the productpage Service and what
+#   HTTP methods they can use. Enforced by the Waypoint proxy at L7.
+#
+# CRITICAL — DEFAULT DENY LOGIC:
+#   No policy exists        -> ALL traffic allowed (Istio default)
+#   Any ALLOW policy exists -> ONLY explicitly listed traffic passes
+#                              Everything else IMPLICITLY DENIED
+#   Any DENY policy exists  -> Matching traffic DENIED regardless of ALLOW
+#
+#   Applying this policy locks productpage to the listed principals only.
+#   Always verify source principals exist before applying ALLOW policies.
+#
+# TARGETREFS vs SELECTOR:
+#
+#   selector (pod-targeted, L4 via ztunnel):
+#     Can match: source IP, port, SPIFFE principal
+#     Cannot match: HTTP methods, headers, paths
+#
+#   targetRefs (service-targeted, L7 via Waypoint):  <- this policy
+#     Can match: HTTP methods, headers, paths, JWT claims
+#     Requires: Waypoint deployed + namespace labelled use-waypoint
+#
+# SERVICE ACCOUNT NAMING — LAB OBSERVATION:
+#   The Sail Operator appends "-istio" to the Gateway name when creating
+#   the ServiceAccount. Gateway CR name: bookinfo-gateway
+#   Actual ServiceAccount created: bookinfo-gateway-istio
+#
+#   Always verify with:
+#     oc get serviceaccount -n bookinfo-ingress
+#   before writing AuthorizationPolicy principals.
+#
+#   SPIFFE identity format:
+#     cluster.local/ns/<namespace>/sa/<serviceaccount-name>
+#
+# ALLOWED SOURCES:
+#   1. bookinfo-ingress/sa/bookinfo-gateway-istio
+#      The ingress gateway — external traffic entering the mesh.
+#      Verified SA name from: oc get sa -n bookinfo-ingress
+#
+#   2. bookinfo/sa/*
+#      Any ServiceAccount in the bookinfo namespace.
+#      Allows internal mesh traffic between bookinfo services.
+#
+# VERIFY AFTER APPLYING:
+#   # External GET via ingress — should succeed (200)
+#   curl -L -o /dev/null -s -w "%{http_code}\n" \
+#     https://bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io/productpage
+#
+#   # External POST via ingress — should be denied (403)
+#   curl -L -X POST -o /dev/null -s -w "%{http_code}\n" \
+#     https://bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io/productpage
+#
+#   # ztunnel logs confirm SPIFFE identity of ingress gateway
+#   oc logs -n ztunnel ztunnel-p9b9r | grep "productpage" | tail -5
+#   # src.identity="spiffe://cluster.local/ns/bookinfo-ingress/sa/bookinfo-gateway-istio"
+# =============================================================================
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: productpage-waypoint
+  namespace: bookinfo
+spec:
+  # targetRefs — targets productpage Service, enforced by Waypoint at L7
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: productpage
+
+  action: ALLOW
+
+  rules:
+  # Rule 1 — Allow ingress gateway (external traffic)
+  - from:
+    - source:
+        # Sail Operator appends "-istio" to Gateway name for the SA.
+        # Gateway name: bookinfo-gateway
+        # Actual SA:    bookinfo-gateway-istio
+        principals:
+        - cluster.local/ns/bookinfo-ingress/sa/bookinfo-gateway-istio
+    to:
+    - operation:
+        methods: ["GET"]
+
+  # Rule 2 — Allow internal bookinfo mesh traffic
+  - from:
+    - source:
+        # Wildcard matches all SAs in bookinfo namespace
+        principals:
+        - cluster.local/ns/bookinfo/sa/*
+    to:
+    - operation:
+        methods: ["GET"]

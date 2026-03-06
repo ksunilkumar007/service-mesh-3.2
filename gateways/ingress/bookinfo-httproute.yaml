@@ -1,0 +1,113 @@
+# =============================================================================
+# HTTPRoute — Routes external traffic to bookinfo productpage
+# =============================================================================
+# PURPOSE:
+#   Attaches to the bookinfo-gateway and routes incoming HTTP requests
+#   to the productpage Service in the bookinfo namespace.
+#
+# NORTH-SOUTH HTTPRoute PATTERN — parentRefs pointing to a Gateway:
+#
+#   This is the ingress pattern — parentRefs points to a Gateway.
+#   Contrast with east-west HTTPRoute (traffic-route.yaml) which points
+#   to a Service.
+#
+#   parentRefs:
+#   - kind: Gateway         <- ingress/egress gateway
+#     name: bookinfo-gateway
+#     namespace: bookinfo-ingress
+#
+#   vs east-west (traffic-route.yaml):
+#   - kind: Service         <- mesh-internal routing via Waypoint
+#     name: reviews
+#
+# CROSS-NAMESPACE REFERENCE:
+#   This HTTPRoute is in the bookinfo namespace.
+#   The Gateway is in the bookinfo-ingress namespace.
+#   Cross-namespace parentRef requires either:
+#     a) Gateway.spec.listeners.allowedRoutes.from: All
+#     b) ReferenceGrant in the Gateway's namespace (bookinfo-ingress)
+#        allowing bookinfo namespace to attach routes
+#   This file uses option (a) — allowedRoutes.from: All in gateway.yaml.
+#
+# HOSTNAME:
+#   bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io
+#   Must match the OCP Route hostname (route.yaml).
+#   The OCP Router matches on Host header and forwards to the gateway.
+#   The gateway matches on hostname and routes to productpage.
+#
+# PATH MATCHING:
+#   /productpage      -> productpage Service (exact and prefix)
+#   /static/*         -> productpage Service (static assets)
+#   /api/v1/products  -> productpage Service (API endpoint)
+#   /login /logout    -> productpage Service (auth endpoints)
+#   /health           -> productpage Service (health check)
+#
+#   Root path / is intentionally not exposed — forces use of /productpage.
+#   This limits the attack surface to known endpoints only.
+#
+# REFERENCEGRANT (alternative to allowedRoutes.from: All):
+#   If you prefer explicit cross-namespace permission instead of "All":
+#
+#   apiVersion: gateway.networking.k8s.io/v1beta1
+#   kind: ReferenceGrant
+#   metadata:
+#     name: bookinfo-httproute-grant
+#     namespace: bookinfo-ingress    <- in the Gateway's namespace
+#   spec:
+#     from:
+#     - group: gateway.networking.k8s.io
+#       kind: HTTPRoute
+#       namespace: bookinfo          <- allow HTTPRoutes from bookinfo ns
+#     to:
+#     - group: gateway.networking.k8s.io
+#       kind: Gateway
+#       name: bookinfo-gateway
+#
+# VERIFY AFTER APPLYING:
+#   oc get httproute bookinfo -n bookinfo -o yaml | grep -A5 "status:"
+#   # Expect: Accepted=True, ResolvedRefs=True
+#
+#   curl -v http://bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io/productpage
+#   # Expect: 200 OK with bookinfo HTML
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: bookinfo
+  # HTTPRoute lives in the app namespace (bookinfo)
+  # but attaches to gateway in bookinfo-ingress namespace
+  namespace: bookinfo
+spec:
+  parentRefs:
+  # Attaches to the ingress Gateway (north-south pattern)
+  - name: bookinfo-gateway
+    namespace: bookinfo-ingress
+    kind: Gateway
+    group: gateway.networking.k8s.io
+
+  # Must match the OCP Route hostname exactly
+  hostnames:
+  - "bookinfo.apps.cluster-p5bcx.dynamic.redhatworkshops.io"
+
+  rules:
+  # Route all bookinfo endpoints to productpage Service
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /productpage
+    - path:
+        type: PathPrefix
+        value: /static
+    - path:
+        type: Exact
+        value: /login
+    - path:
+        type: Exact
+        value: /logout
+    - path:
+        type: PathPrefix
+        value: /api/v1/products
+    backendRefs:
+    - name: productpage
+      port: 9080
+      namespace: bookinfo

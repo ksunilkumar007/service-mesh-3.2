@@ -1,0 +1,77 @@
+# =============================================================================
+# OpenTelemetryCollector — receives Istio traces, forwards to Tempo gateway
+# =============================================================================
+# PURPOSE:
+#   Centralized OTEL collector that:
+#   1. Receives OTLP traces from Istio Waypoint (port 4317 gRPC, 4318 HTTP)
+#   2. Batches and forwards to Tempo gateway (port 8090 gRPC + TLS + OAuth)
+#
+# AUTHENTICATION TO TEMPO:
+#   Tempo gateway runs in openshift mode — requires OCP bearer token.
+#   Uses bearertokenauth extension with pod SA token (auto-mounted).
+#   SA must have ClusterRole tempostack-traces-write (see tempo-rbac.yaml).
+#
+# X-Scope-OrgID: dev
+#   Matches the tenantName defined in TempoStack CR.
+#   Must match exactly — case sensitive.
+#
+# TLS TO TEMPO GATEWAY:
+#   insecure_skip_verify: true — gateway uses OCP service CA cert.
+#   For production: mount the service CA and set ca_file instead.
+#
+# KNOWN WARNING:
+#   "otlp" alias is deprecated; use "otlp_grpc" instead
+#   This is a cosmetic warning from otelcol v0.144.0 — no functional impact.
+#   Will be fixed when the exporter key is renamed to otlp_grpc in a future
+#   version of the OpenTelemetry Operator.
+#
+# DATA FLOW:
+#   Istio Waypoint
+#     -> OTLP gRPC -> otel-collector:4317 (receiver)
+#     -> batch processor
+#     -> OTLP gRPC TLS+OAuth -> tempo-tempo-gateway:8090 (exporter)
+#     -> Tempo distributor -> ingester -> S3 (NooBaa)
+# =============================================================================
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: tracing
+spec:
+  mode: deployment
+  config:
+    extensions:
+      bearertokenauth:
+        filename: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+
+    exporters:
+      otlp/dev:
+        endpoint: tempo-tempo-gateway.tracing.svc.cluster.local:8090
+        tls:
+          insecure: false
+          insecure_skip_verify: true
+        auth:
+          authenticator: bearertokenauth
+        headers:
+          X-Scope-OrgID: dev
+
+    service:
+      extensions: [bearertokenauth]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp/dev]

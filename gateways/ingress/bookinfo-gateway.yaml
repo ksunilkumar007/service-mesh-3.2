@@ -1,0 +1,91 @@
+# =============================================================================
+# Gateway — Istio ingress gateway for bookinfo
+# =============================================================================
+# PURPOSE:
+#   Deploys an Envoy-based ingress gateway using the Kubernetes Gateway API.
+#   This handles north-south traffic — external requests entering the mesh.
+#
+# GATEWAY API vs ISTIO GATEWAY CRD:
+#   This uses gateway.networking.k8s.io/v1 (Kubernetes Gateway API).
+#   NOT networking.istio.io/v1 (older Istio Gateway CRD).
+#   OSSM 3.2 requires Gateway API for ambient mode ingress.
+#   The older Istio Gateway CRD still works for sidecar mode but is
+#   not recommended for new deployments.
+#
+# gatewayClassName: istio vs istio-waypoint:
+#
+#   istio          <- this file — deploys an ingress/egress gateway
+#                     Envoy configured for north-south traffic
+#                     Creates a Service (ClusterIP or LoadBalancer)
+#                     Exposes ports to external traffic
+#
+#   istio-waypoint <- used in waypoint.yaml — deploys a mesh Waypoint
+#                     Envoy configured for east-west L7 traffic
+#                     Only reachable from within the mesh via HBONE
+#                     NOT for external traffic
+#
+# WHAT SAIL OPERATOR CREATES WHEN YOU APPLY THIS:
+#   1. Deployment: bookinfo-gateway (Envoy proxy pod)
+#   2. Service: bookinfo-gateway (ClusterIP by default on bare metal)
+#   3. ServiceAccount: bookinfo-gateway
+#      SPIFFE identity: spiffe://cluster.local/ns/bookinfo-ingress/sa/bookinfo-gateway
+#      This identity is used in AuthorizationPolicy to allow ingress -> productpage
+#
+# SERVICE TYPE — ClusterIP (bare metal / platform: None):
+#   On AWS/Azure/GCP: type=LoadBalancer, cloud NLB provisioned automatically
+#   On bare metal (this cluster): type=ClusterIP, OCP Route fronts the gateway
+#   The OCP Route (route.yaml) points to this ClusterIP Service.
+#
+# LISTENER:
+#   port: 80, protocol: HTTP
+#   External HTTPS termination is handled by the OCP Router (edge TLS).
+#   The gateway receives plain HTTP from the router and routes to bookinfo.
+#   For end-to-end TLS: change to port 443, protocol HTTPS, add tls config.
+#
+# NAMESPACE:
+#   bookinfo-ingress — must be labelled istio-discovery=enabled
+#   and created before applying this file.
+#
+# REFERENCEGRANT:
+#   The HTTPRoute in bookinfo namespace references this Gateway in
+#   bookinfo-ingress namespace. Cross-namespace references require
+#   a ReferenceGrant in the Gateway's namespace allowing the HTTPRoute's
+#   namespace to attach. See httproute.yaml for the ReferenceGrant.
+#
+# VERIFY AFTER APPLYING:
+#   # Gateway CR accepted and programmed
+#   oc get gateway bookinfo-gateway -n bookinfo-ingress -o yaml | grep -A10 "status:"
+#   # Expect: Accepted=True, Programmed=True
+#
+#   # Gateway pod running
+#   oc get pods -n bookinfo-ingress
+#   # bookinfo-gateway-xxx  1/1  Running
+#
+#   # ServiceAccount created
+#   oc get serviceaccount bookinfo-gateway -n bookinfo-ingress
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: bookinfo-gateway
+  namespace: bookinfo-ingress
+spec:
+  # istio — deploys an ingress/egress Envoy gateway.
+  # Do NOT use istio-waypoint here — that is for mesh Waypoints only.
+  gatewayClassName: istio
+
+  listeners:
+  - name: http
+    # Port 80 — plain HTTP from OCP Router (edge TLS terminates at router)
+    # For end-to-end TLS: change to 443, protocol: HTTPS, add tls block
+    port: 80
+    protocol: HTTP
+
+    # allowedRoutes — which namespaces can attach HTTPRoutes to this Gateway
+    allowedRoutes:
+      namespaces:
+        # Same namespace only by default.
+        # Our HTTPRoute is in bookinfo namespace (different namespace).
+        # Use "All" to allow any namespace, or "Selector" for label-based.
+        # ReferenceGrant in bookinfo-ingress namespace also required.
+        from: All

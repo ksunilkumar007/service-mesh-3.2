@@ -1,0 +1,61 @@
+# =============================================================================
+# Egress Waypoint — ambient mode L7 egress enforcement
+# =============================================================================
+# PURPOSE:
+#   Deploys a dedicated Waypoint proxy for egress traffic to external services.
+#   In ambient mode, the Waypoint IS the egress gateway — no separate
+#   egress gateway pod is needed (unlike sidecar mode).
+#
+# AMBIENT MODE EGRESS ARCHITECTURE:
+#   Sidecar mode:
+#     pod -> Envoy sidecar -> VirtualService -> egress gateway pod -> external
+#
+#   Ambient mode (this file):
+#     pod -> ztunnel -> egress Waypoint -> external
+#
+#   No VirtualService. No DestinationRule. No egress gateway pod.
+#   ztunnel automatically routes traffic through the Waypoint when the
+#   destination ServiceEntry has istio.io/use-waypoint labels set.
+#
+# waypoint-for: all
+#   The bookinfo Waypoint uses waypoint-for: service (east-west only).
+#   This egress Waypoint uses waypoint-for: all to handle ServiceEntry
+#   traffic (external services) in addition to internal Services.
+#
+# allowedRoutes.namespaces.from: All
+#   CRITICAL — must be set to All (not the default Same).
+#   The ServiceEntry is in istio-system namespace.
+#   Without from: All the attachment is rejected:
+#     "we are not permitted to attach to waypoint egress/egress-waypoint"
+#
+# NAMESPACE: egress
+#   Dedicated namespace isolates egress policy from app namespaces.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: egress
+  labels:
+    istio-discovery: enabled
+    istio.io/dataplane-mode: ambient
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: egress-waypoint
+  namespace: egress
+  labels:
+    # all = handles ServiceEntry traffic (external) + Service traffic (internal)
+    # service = east-west Services only (default for bookinfo waypoint)
+    istio.io/waypoint-for: all
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+    allowedRoutes:
+      namespaces:
+        # Must be All — ServiceEntry is in istio-system, not egress namespace
+        # Default (Same) causes: AttachmentDenied "missing allowedRoutes"
+        from: All

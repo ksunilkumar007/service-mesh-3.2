@@ -1,0 +1,56 @@
+# =============================================================================
+# ServiceEntry — github.com bound to egress Waypoint
+# =============================================================================
+# PURPOSE:
+#   Registers github.com in the mesh registry AND binds it to the egress
+#   Waypoint so ztunnel routes all connections to github.com through the
+#   Waypoint for L7 policy enforcement.
+#
+# KEY LABELS — how Waypoint binding works:
+#   istio.io/use-waypoint: egress-waypoint
+#     Name of the Waypoint to use.
+#
+#   istio.io/use-waypoint-namespace: egress
+#     Namespace of the Waypoint (cross-namespace reference).
+#     Required because Waypoint is in egress, ServiceEntry is in istio-system.
+#
+# HOW ZTUNNEL USES THESE LABELS:
+#   1. DNS capture: ztunnel intercepts DNS queries from pods
+#   2. github.com resolves to synthetic IP 240.240.0.2 (auto-allocated)
+#   3. ztunnel sees 240.240.0.2 is bound to egress-waypoint
+#   4. Connection routed via HBONE to egress Waypoint pod
+#   5. Waypoint forwards to real github.com IP
+#   6. AuthorizationPolicy enforced at Waypoint
+#
+# VERIFY:
+#   # Synthetic IP assigned (DNS capture working)
+#   oc exec -n bookinfo deploy/productpage-v1 -- \
+#     python3 -c "import socket; print(socket.gethostbyname('github.com'))"
+#   # 240.240.0.2  <- synthetic mesh IP, not real CDN IP
+#
+#   # Waypoint bound
+#   istioctl ztunnel-config svc --namespace ztunnel | grep github
+#   # WAYPOINT=egress-waypoint
+#
+#   # ServiceEntry status
+#   oc get serviceentry github-external -n istio-system -o yaml | grep -A5 "WaypointBound"
+#   # message: bound to egress/egress-waypoint
+# =============================================================================
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: github-external
+  namespace: istio-system
+  labels:
+    # Bind to egress Waypoint in egress namespace
+    istio.io/use-waypoint: egress-waypoint
+    istio.io/use-waypoint-namespace: egress
+spec:
+  hosts:
+  - github.com
+  location: MESH_EXTERNAL
+  resolution: DNS
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS

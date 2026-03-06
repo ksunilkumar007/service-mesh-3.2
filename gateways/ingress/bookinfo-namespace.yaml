@@ -1,0 +1,41 @@
+# =============================================================================
+# Namespace — bookinfo-ingress
+# =============================================================================
+# PURPOSE:
+#   Dedicated namespace for the Istio ingress gateway.
+#   Keeping the ingress gateway in its own namespace:
+#     - Isolates ingress traffic from application namespaces
+#     - Allows separate RBAC for ingress gateway management
+#     - Makes the ingress gateway ServiceAccount identity explicit:
+#         spiffe://cluster.local/ns/bookinfo-ingress/sa/bookinfo-gateway
+#     - This SPIFFE identity is used in AuthorizationPolicy to allow
+#       only the ingress gateway to reach productpage
+#
+# LABELS:
+#   istio-discovery=enabled
+#     Required by discoverySelectors in istio.yaml.
+#     Without this, istiod does not watch this namespace and cannot
+#     configure the Gateway pod via xDS.
+#
+#   istio.io/dataplane-mode=ambient
+#     Enrolls the Gateway pod in ambient mode so ztunnel handles
+#     mTLS for its outbound traffic to bookinfo services.
+#     The Gateway pod itself has istio.io/dataplane-mode=none label
+#     (set by Sail Operator) — but the namespace enrollment ensures
+#     ztunnel tracks it as a workload.
+#
+# POD SECURITY:
+#   OCP 4.20 automatically adds pod-security audit/warn labels.
+#   The Gateway pod does not require privileged access — it runs
+#   as a standard Envoy proxy without host network or root access.
+#   No additional SCC configuration required.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bookinfo-ingress
+  labels:
+    # Required for istiod discoverySelectors to watch this namespace
+    istio-discovery: enabled
+    # Enroll Gateway pod in ambient data plane
+    istio.io/dataplane-mode: ambient

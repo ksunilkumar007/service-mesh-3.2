@@ -1,4 +1,4 @@
-# single-cluster/ambient-mode/
+# mesh/ambient/
 
 ## What this block does
 
@@ -38,8 +38,7 @@ Istio:     v1.27.5_ossm (Red Hat build)
 | traffic-route.yaml | HTTPRoute | gateway.networking.k8s.io/v1 | 90/10 traffic split |
 | peerauthentication.yaml | PeerAuthentication | security.istio.io/v1 | Mesh-wide STRICT mTLS |
 | peerauth-bookinfo.yaml | PeerAuthentication | security.istio.io/v1 | Namespace STRICT mTLS |
-| destinationrule.yaml | DestinationRule | networking.istio.io/v1 | Disable mTLS to kube API |
-| authorization-policy.yaml | AuthorizationPolicy | security.istio.io/v1 | L7 access control (apply after ingress) |
+| authorizationpolicy.yaml | AuthorizationPolicy | security.istio.io/v1 | L7 access control via Waypoint (apply after ingress) |
 
 ---
 
@@ -56,9 +55,8 @@ Istio:     v1.27.5_ossm (Red Hat build)
 7.  traffic-route.yaml          90/10 traffic split
 8.  peerauthentication.yaml     Mesh-wide STRICT mTLS
 9.  peerauth-bookinfo.yaml      Namespace STRICT mTLS
-10. destinationrule.yaml        Protect API server
     -- deploy ingress first --
-11. authorization-policy.yaml   L7 access control (after ingress gateway SA exists)
+10. authorizationpolicy.yaml    L7 access control (after ingress gateway SA exists)
 ```
 
 ---
@@ -329,7 +327,8 @@ they show both hops and full SPIFFE identity for every connection.
 bookinfo ships with a single reviews Service selecting all three versions.
 Gateway API HTTPRoute backendRefs point to Services, not pod labels.
 Per-version Services are required — they replace DestinationRule subsets
-from sidecar mode.
+from sidecar mode. In ambient mode the Waypoint reads HTTPRoute natively
+and does not read DestinationRule subsets at all.
 
 ```bash
 # Step 1 — create per-version Services
@@ -432,22 +431,6 @@ oc patch peerauthentication bookinfo-strict -n bookinfo \
 
 ---
 
-## DestinationRule — protect Kubernetes API server
-
-```bash
-oc apply -f destinationrule.yaml
-```
-
-Without this, STRICT mTLS causes double-TLS to the API server:
-Istio wraps traffic in mTLS on top of the API server's own TLS.
-Result: TLS handshake failure for any pod calling the Kubernetes API.
-
-Symptoms without this rule:
-- Operators and controllers in mesh namespaces fail to reach API server
-- "certificate verify failed" errors to kubernetes.default.svc.cluster.local
-
----
-
 ## AuthorizationPolicy — apply AFTER ingress
 
 authorization-policy.yaml targets the productpage Service via Waypoint
@@ -528,9 +511,6 @@ oc get peerauthentication -A
 # istio-system/default: STRICT
 # bookinfo/bookinfo-strict: STRICT
 
-oc get destinationrule -n istio-system
-# api-server  kubernetes.default.svc.cluster.local
-
 oc get httproute -n bookinfo
 # reviews  (ResolvedRefs: True, ResolvedWaypoints: True)
 ```
@@ -540,6 +520,6 @@ oc get httproute -n bookinfo
 ## What to do next
 
 ```
-single-cluster/ingress/   Deploy Gateway API ingress for external access
-                          Then return here to apply authorization-policy.yaml
+gateways/ingress/   Deploy Gateway API ingress for external access
+                    Then return here to apply authorizationpolicy.yaml
 ```

@@ -1,0 +1,33 @@
+# =============================================================================
+# ReferenceGrant — allows istio-system to attach to egress Waypoint
+# =============================================================================
+# PURPOSE:
+#   Grants permission for resources in istio-system to reference the
+#   egress Waypoint in the egress namespace.
+#
+# WHY NEEDED:
+#   ServiceEntry (github-external) is in istio-system.
+#   Egress Waypoint is in egress namespace.
+#   Without ReferenceGrant, attachment is denied even with from: All.
+#
+# CORRECT from.group and from.kind:
+#   group: ""  kind: namespace  <- correct Gateway API format
+#   NOT group: networking.istio.io  kind: ServiceEntry <- rejected
+#
+# PLACEMENT:
+#   Must be in TARGET namespace (egress) — where the Waypoint lives.
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: istio-system-egress-waypoint
+  namespace: egress
+spec:
+  from:
+  - group: ""
+    kind: namespace
+    namespace: istio-system
+  to:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: egress-waypoint
