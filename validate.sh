@@ -356,9 +356,9 @@ print(len(up))
   if [[ "$PILOT_METRICS" -ge 1 ]]; then pass "istiod metrics: pilot_xds_pushes present"; else fail "istiod metrics: pilot_xds_pushes missing"; fi
 
   WAYPOINT_METRICS=$(oc exec -n openshift-user-workload-monitoring "$PROM_POD" -c prometheus -- \
-    curl -s "http://localhost:9090/api/v1/query?query=envoy_http_downstream_rq_total" 2>/dev/null | \
+    curl -s "http://localhost:9090/api/v1/query?query=envoy_cluster_upstream_cx_active" 2>/dev/null | \
     python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['data']['result']))" 2>/dev/null)
-  if [[ "$WAYPOINT_METRICS" -ge 1 ]]; then pass "Waypoint metrics: envoy_http_downstream_rq_total present"; else fail "Waypoint metrics: envoy_http_downstream_rq_total missing"; fi
+  if [[ "$WAYPOINT_METRICS" -ge 1 ]]; then pass "Waypoint metrics: envoy_cluster_upstream_cx_active present"; else fail "Waypoint metrics: envoy_cluster_upstream_cx_active missing"; fi
 
   ZTUNNEL_METRICS=$(oc exec -n openshift-user-workload-monitoring "$PROM_POD" -c prometheus -- \
     curl -s "http://localhost:9090/api/v1/query?query=workload_manager_active_proxy_count" 2>/dev/null | \
